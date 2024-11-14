@@ -1,5 +1,6 @@
 #include "driver/rmt.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 
 #define RMT_TX_CHANNEL    RMT_CHANNEL_0  
 #define RMT_TX_GPIO_NUM   GPIO_NUM_18    
@@ -11,70 +12,85 @@
 #define BIT_DURATION_0_US 560            
 #define BIT_DURATION_1_US 1680           
 
+#define BUTTON_GPIO_NUM_1 GPIO_NUM_25 // Botão 1
+#define BUTTON_GPIO_NUM_2 GPIO_NUM_26 // Botão 2
+#define BUTTON_GPIO_NUM_3 GPIO_NUM_27 // Botão 3
+#define BUTTON_GPIO_NUM_4 GPIO_NUM_14 // Botão 4
+
 static const char *TAG = "IR_Transmitter";
 
-void send_signal(int command[], int num_of_bits) {
-    int end_of_frame0 = BIT_DURATION_0_US / (PULSE_HIGH_US + PULSE_LOW_US);
-    rmt_item32_t end_of_frame[end_of_frame0 + 1]; 
+int command_sequence[] = {
+    0,0,1,0,1,0,0,0,
+    0,1,0,0,1,0,0,0,
+    0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,
+    1,0,0,1
+};
 
-    // Configuração dos pulsos de 560 us de 38 kHz
-    for (int i = 0; i < end_of_frame0; i++) {
-        // LED IR ligado
-        end_of_frame[i].level0 = 1;                
-        // 13 µs nível alto
-        end_of_frame[i].duration0 = PULSE_HIGH_US; 
-        // LED IR desligado
-        end_of_frame[i].level1 = 0;                
-        // 13 µs nível baixo
-        end_of_frame[i].duration1 = PULSE_LOW_US;  
+// Inicializa o botão de entrada
+void init_button(int gpio_num) {
+    gpio_config_t io_conf;
+
+    // Interrupção na borda de descida (pressionamento)
+    io_conf.intr_type = GPIO_INTR_NEGEDGE;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pin_bit_mask = (1ULL << gpio_num);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&io_conf);
+}
+
+// Verifica o estado do botão (pressionado ou não)
+int is_button_pressed(int gpio_num) {
+    // Pressionado retorna 0 (ativo em nível baixo)
+    return gpio_get_level(gpio_num) == 0; 
+}
+
+// Função para ligar o ar-condicionado
+void ligar_ar_condicionado() {
+    int subarray[] = {1, 0, 0, 0}; 
+    int subarray_size = sizeof(subarray) / sizeof(subarray[0]);
+    replace_subarray(
+        command_sequence, 
+        sizeof(command_sequence) / sizeof(command_sequence[0]), 
+        4, 7, subarray, subarray_size
+    );
+}
+
+// Função para desligar o ar-condicionado
+void desligar_ar_condicionado() {
+    int subarray[] = {0, 0, 0, 0}; 
+    int subarray_size = sizeof(subarray) / sizeof(subarray[0]);
+    replace_subarray(
+        command_sequence, 
+        sizeof(command_sequence) / sizeof(command_sequence[0]), 
+        4, 7, subarray, subarray_size
+    );
+}
+
+// Função para aumentar a temperatura
+void aumentar_temperatura() {
+    int limit[] = {1, 0, 1, 1};
+    int limit_length = sizeof(limit) / sizeof(limit[0]);
+    if (!is_subarray_equal(command_sequence, 12, 15, limit, limit_length)) {
+        add_to_bits(command_sequence, 12, 15, 1);
+        subtract_from_bits(command_sequence, 40, 43, 1);
     }
+}
 
-    // Define o item final da transmissão
-    end_of_frame[end_of_frame0].level0 = 1;           
-    end_of_frame[end_of_frame0].duration0 = 0;  
-    end_of_frame[end_of_frame0].level1 = 1;           
-    end_of_frame[end_of_frame0].duration1 = 0;
-
-    // Lead code de 9ms de 38kHz seguido por 4.5ms em nível alto
-    int num_pulses = TOTAL_DURATION_US / (PULSE_HIGH_US + PULSE_LOW_US);
-    rmt_item32_t lead_code[num_pulses + 1];
-    for (int i = 0; i < num_pulses; i++) {
-        lead_code[i].level0 = 1;
-        lead_code[i].duration0 = PULSE_HIGH_US;
-        lead_code[i].level1 = 0;
-        lead_code[i].duration1 = PULSE_LOW_US;
+// Função para diminuir a temperatura
+void diminuir_temperatura() {
+    int limit[] = {0, 0, 0, 0};
+    int limit_length = sizeof(limit) / sizeof(limit[0]);
+    if (!is_subarray_equal(command_sequence, 12, 15, limit, limit_length)) {
+        subtract_from_bits(command_sequence, 12, 15, 1);
+        add_to_bits(command_sequence, 40, 43, 1);
     }
-    lead_code[num_pulses].level0 = 1;
-    lead_code[num_pulses].duration0 = HIGH_DURATION_US;
-    lead_code[num_pulses].level1 = 0;
-    lead_code[num_pulses].duration1 = 0;
-
-    // Envia o código de início (lead code)
-    rmt_write_items(RMT_TX_CHANNEL, lead_code, num_pulses + 1, true);
-
-    // Envia cada bit da sequência (0 ou 1)
-    for (int i = 0; i < num_of_bits; i++) {
-        int bit_duration = (command[i] == 1) ? BIT_DURATION_1_US : BIT_DURATION_0_US;
-        int num_pulses_bit = BIT_DURATION_0_US / (PULSE_HIGH_US + PULSE_LOW_US);
-        rmt_item32_t bit_pulse[num_pulses_bit + 1];
-        for (int j = 0; j < num_pulses_bit; j++) {
-            bit_pulse[j].level0 = 1;
-            bit_pulse[j].duration0 = PULSE_HIGH_US;
-            bit_pulse[j].level1 = 0;
-            bit_pulse[j].duration1 = PULSE_LOW_US;
-        }
-        bit_pulse[num_pulses_bit].level0 = 1;
-        bit_pulse[num_pulses_bit].duration0 = bit_duration;
-        bit_pulse[num_pulses_bit].level1 = 0;
-        bit_pulse[num_pulses_bit].duration1 = 0;
-
-        // Envia o pulso do bit
-        rmt_write_items(RMT_TX_CHANNEL, bit_pulse, num_pulses_bit + 1, true);
-    }
-    rmt_write_items(RMT_TX_CHANNEL, end_of_frame, end_of_frame0 + 1, true);
 }
 
 void app_main(void) {
+    // Configuração do transmissor IR
     rmt_config_t rmt_tx_config = {
         .rmt_mode = RMT_MODE_TX,
         .channel = RMT_TX_CHANNEL,
@@ -90,19 +106,53 @@ void app_main(void) {
     rmt_config(&rmt_tx_config);
     rmt_driver_install(RMT_TX_CHANNEL, 0, 0);
 
-    int command_sequence[] = {
-        0,0,1,0,1,0,0,0,
-        0,1,0,0,1,0,0,0,
-        0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,
-        1,0,0,1
-    };
-    int num_of_bits = sizeof(command_sequence) / sizeof(command_sequence[0]);
+    // Inicializa os botões
+    init_button(BUTTON_GPIO_NUM_1);
+    init_button(BUTTON_GPIO_NUM_2);
+    init_button(BUTTON_GPIO_NUM_3);
+    init_button(BUTTON_GPIO_NUM_4);
 
     while (1) {
-        ESP_LOGI(TAG, "Enviando sinal IR...");
-        send_signal(command_sequence, num_of_bits);
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        ESP_LOGI(TAG, "Esperando comandos dos botões...");
+
+        // Verifica se algum botão foi pressionado
+        if (is_button_pressed(BUTTON_GPIO_NUM_1)) {
+            ESP_LOGI(TAG, "Botão 1 pressionado: Ligando ar-condicionado.");
+            ligar_ar_condicionado();
+            send_signal(
+                command_sequence, 
+                sizeof(command_sequence) / sizeof(command_sequence[0])
+            );
+        }
+
+        if (is_button_pressed(BUTTON_GPIO_NUM_2)) {
+            ESP_LOGI(TAG, "Botão 2 pressionado: Desligando ar-condicionado.");
+            desligar_ar_condicionado();
+            send_signal(
+                command_sequence, 
+                sizeof(command_sequence) / sizeof(command_sequence[0])
+            );
+        }
+
+        if (is_button_pressed(BUTTON_GPIO_NUM_3)) {
+            ESP_LOGI(TAG, "Botão 3 pressionado: Aumentando temperatura.");
+            aumentar_temperatura();
+            send_signal(
+                command_sequence, 
+                sizeof(command_sequence) / sizeof(command_sequence[0])
+            );
+        }
+
+        if (is_button_pressed(BUTTON_GPIO_NUM_4)) {
+            ESP_LOGI(TAG, "Botão 4 pressionado: Diminuindo temperatura.");
+            diminuir_temperatura();
+            send_signal(
+                command_sequence, 
+                sizeof(command_sequence) / sizeof(command_sequence[0])
+            );
+        }
+
+        // Aguarda 100 ms antes de verificar novamente
+        vTaskDelay(pdMS_TO_TICKS(100)); 
     }
 }
