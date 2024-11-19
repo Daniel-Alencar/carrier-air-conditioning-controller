@@ -1,3 +1,4 @@
+#include <math.h>
 #include "driver/rmt.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
@@ -18,6 +19,154 @@
 #define BUTTON_GPIO_NUM_4 GPIO_NUM_14 // Botão 4
 
 static const char *TAG = "IR_Transmitter";
+
+// Função para converter um grupo de bits para um número inteiro
+int bits_to_int(int *bits, int size) {
+    int result = 0;
+    for (int i = 0; i < size; i++) {
+        result += bits[i] * (int)pow(2, size - 1 - i);
+    }
+    return result;
+}
+
+// Função para converter um número inteiro para bits
+void int_to_bits(int value, int *bits, int size) {
+    for (int i = size - 1; i >= 0; i--) {
+        bits[i] = value % 2;
+        value /= 2;
+    }
+}
+
+void send_signal(int command[], int num_of_bits) {
+    int end_of_frame0 = BIT_DURATION_0_US / (PULSE_HIGH_US + PULSE_LOW_US);
+    rmt_item32_t end_of_frame[end_of_frame0 + 1]; 
+
+    // Configuração dos pulsos de 560 us de 38 kHz
+    for (int i = 0; i < end_of_frame0; i++) {
+        // LED IR ligado
+        end_of_frame[i].level0 = 1;                
+        // 13 µs nível alto
+        end_of_frame[i].duration0 = PULSE_HIGH_US; 
+        // LED IR desligado
+        end_of_frame[i].level1 = 0;                
+        // 13 µs nível baixo
+        end_of_frame[i].duration1 = PULSE_LOW_US;  
+    }
+
+    // Define o item final da transmissão
+    end_of_frame[end_of_frame0].level0 = 1;           
+    end_of_frame[end_of_frame0].duration0 = 0;  
+    end_of_frame[end_of_frame0].level1 = 1;           
+    end_of_frame[end_of_frame0].duration1 = 0;
+
+    // Lead code de 9ms de 38kHz seguido por 4.5ms em nível alto
+    int num_pulses = TOTAL_DURATION_US / (PULSE_HIGH_US + PULSE_LOW_US);
+    rmt_item32_t lead_code[num_pulses + 1];
+    for (int i = 0; i < num_pulses; i++) {
+        lead_code[i].level0 = 1;
+        lead_code[i].duration0 = PULSE_HIGH_US;
+        lead_code[i].level1 = 0;
+        lead_code[i].duration1 = PULSE_LOW_US;
+    }
+    lead_code[num_pulses].level0 = 1;
+    lead_code[num_pulses].duration0 = HIGH_DURATION_US;
+    lead_code[num_pulses].level1 = 0;
+    lead_code[num_pulses].duration1 = 0;
+
+    // Envia o código de início (lead code)
+    rmt_write_items(RMT_TX_CHANNEL, lead_code, num_pulses + 1, true);
+
+    // Envia cada bit da sequência (0 ou 1)
+    for (int i = 0; i < num_of_bits; i++) {
+        int bit_duration = (command[i] == 1) ? BIT_DURATION_1_US : BIT_DURATION_0_US;
+        int num_pulses_bit = BIT_DURATION_0_US / (PULSE_HIGH_US + PULSE_LOW_US);
+        rmt_item32_t bit_pulse[num_pulses_bit + 1];
+        for (int j = 0; j < num_pulses_bit; j++) {
+            bit_pulse[j].level0 = 1;
+            bit_pulse[j].duration0 = PULSE_HIGH_US;
+            bit_pulse[j].level1 = 0;
+            bit_pulse[j].duration1 = PULSE_LOW_US;
+        }
+        bit_pulse[num_pulses_bit].level0 = 1;
+        bit_pulse[num_pulses_bit].duration0 = bit_duration;
+        bit_pulse[num_pulses_bit].level1 = 0;
+        bit_pulse[num_pulses_bit].duration1 = 0;
+
+        // Envia o pulso do bit
+        rmt_write_items(RMT_TX_CHANNEL, bit_pulse, num_pulses_bit + 1, true);
+    }
+    rmt_write_items(RMT_TX_CHANNEL, end_of_frame, end_of_frame0 + 1, true);
+}
+
+void replace_subarray(
+    int *main_array, int main_size, 
+    int start_index, int end_index, 
+    int *subarray, int sub_size
+) {
+    // Verifica se os índices são válidos
+    if (
+        start_index < 0 || end_index >= main_size || 
+        end_index - start_index + 1 != sub_size
+    ) {
+        printf("Erro: Tamanho ou índices inválidos para substituição.\n");
+        return;
+    }
+
+    // Substitui os valores do trecho pelo subarray
+    for (int i = 0; i < sub_size; i++) {
+        main_array[start_index + i] = subarray[i];
+    }
+}
+
+// Função para verificar se um trecho do array é igual a um subarray
+int is_subarray_equal(
+    int *array, int start, int end, 
+    int *subarray, int subarray_length
+) {
+    // Verifica se os tamanhos dos segmentos são compatíveis
+    if ((end - start + 1) != subarray_length) {
+        // Tamanhos incompatíveis
+        return 0; 
+    }
+    // Compara os elementos um a um
+    for (int i = 0; i < subarray_length; i++) {
+        if (array[start + i] != subarray[i]) {
+            // Um elemento é diferente
+            return 0; 
+        }
+    }
+    // Todos os elementos são iguais
+    return 1; 
+}
+
+// Função para somar valor a um grupo de bits em um array
+void add_to_bits(
+    int *sequence, 
+    int start_index, 
+    int end_index, 
+    int value_to_add
+) {
+    int size = end_index - start_index + 1;
+    int current_value = bits_to_int(&sequence[start_index], size);
+    int new_value = current_value + value_to_add;
+    int_to_bits(new_value, &sequence[start_index], size);
+}
+
+// Função para subtrair valor de um grupo de bits em um array
+void subtract_from_bits(
+    int *sequence, 
+    int start_index, 
+    int end_index, 
+    int value_to_subtract
+) {
+    int size = end_index - start_index + 1;
+    int current_value = bits_to_int(&sequence[start_index], size);
+    int new_value = current_value - value_to_subtract;
+
+    // Garante que o valor não seja negativo
+    if (new_value < 0) new_value = 0; 
+    int_to_bits(new_value, &sequence[start_index], size);
+}
 
 int command_sequence[] = {
     0,0,1,0,1,0,0,0,
