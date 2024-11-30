@@ -220,7 +220,7 @@ void desligar_ar_condicionado() {
 
 // Função para aumentar a temperatura
 void aumentar_temperatura() {
-    int limit[] = {1, 0, 1, 1};
+    int limit[] = {1, 1, 1, 1};
     int limit_length = sizeof(limit) / sizeof(limit[0]);
     if (!is_subarray_equal(command_sequence, 12, 15, limit, limit_length)) {
         add_to_bits(command_sequence, 12, 15, 1);
@@ -230,7 +230,7 @@ void aumentar_temperatura() {
 
 // Função para diminuir a temperatura
 void diminuir_temperatura() {
-    int limit[] = {0, 0, 0, 0};
+    int limit[] = {0, 0, 1, 1};
     int limit_length = sizeof(limit) / sizeof(limit[0]);
     if (!is_subarray_equal(command_sequence, 12, 15, limit, limit_length)) {
         subtract_from_bits(command_sequence, 12, 15, 1);
